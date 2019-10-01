@@ -56,6 +56,7 @@ def get_teams_data(soup):
 
 
 def parse_team_data(soup):
+
     try:
         return {
             'id': int(soup['data-team-id']),
@@ -63,8 +64,8 @@ def parse_team_data(soup):
             'country_abrv': soup.find('span', {'class': 'fi-t__nTri'}).text,
             'rank': int(soup.find('td', {'class': 'fi-table__rank'}).text),
             'total_points': int(soup.find('td', {'class': 'fi-table__points'}).text),
-            'previous_points': int(soup.find('td', {'class': 'fi-table__prevpoints'}).text),
-            'rank_change': int(soup.find('td', {'class': 'fi-table__rankingmovement'}).text),
+            'previous_points': int(soup.find('td', {'class': 'fi-table__prevpoints'}).text.replace('', '0')),
+            'rank_change': int(soup.find('td', {'class': 'fi-table__rankingmovement'}).text.replace('-', '0')),
             'confederation': soup.find('td', {'class': 'fi-table__confederation'}).text.strip('#'),
             'rank_date': date
         }
@@ -84,7 +85,7 @@ def save_table(dataframe):
 
 
 if __name__ == '__main__':
-    date_id = 'id8198'  # first date 13 June 2007
+    date_id = 'id1'  # first date 31 12 1992
     fifa_url = 'https://www.fifa.com/fifa-world-ranking/ranking-table/men/rank'
     attribute_error_msg = 'ERROR: The fifa.com site has changed the code. Create issue in the project repository.'
     page_soup = get_page_soup(date_id, fifa_url)
