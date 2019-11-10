@@ -1,5 +1,5 @@
 # FIFA/Coca-Cola World Ranking
-Parsing the table FIFA World Ranking from fifa.com to csv file. Data is available from 2007.
+Parsing the table FIFA World Ranking from fifa.com to csv file. Data is available from 1992.
 
 Last rank updates in Google sheets [here](https://docs.google.com/spreadsheets/d/1MdviCBLSXoXJHP9RyiU1mlbUZMp9TpUNhfqbMoHob-A/).
 
@@ -68,7 +68,7 @@ Last rank updates in Google sheets [here](https://docs.google.com/spreadsheets/d
     import pandas as pd
     
     
-    df = pd.read_csv('PATH_TO_FILE/fifa_ranking-2019-06-14.csv')
+    df = pd.read_csv('PATH_TO_FILE/fifa_ranking-2019-10-24.csv')
     ```
 ## Requirements
 Python 3.7 or newest and packages from requirements.txt
