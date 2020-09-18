@@ -1,126 +1,161 @@
 import datetime
+import asyncio
+import aiohttp
+import logging
 import os
 import requests as r
 import pandas as pd
-import numpy as np
 from bs4 import BeautifulSoup
+from bs4.element import SoupStrainer
 
 
-def get_page_soup(page_id, url):
-    try:
-        page_source = r.get(f'{url}/{page_id}/')
-        page_source.raise_for_status()
-        page_source.encoding = 'utf8'
-        soup = BeautifulSoup(page_source.content, 'html.parser')
-    except r.exceptions.HTTPError:
-        exit('ERROR: URL page "FIFA World Ranking" has been changed. Create issue in the project repository.')
-    except r.exceptions.ConnectionError:
-        exit('ERROR: Connection error. Check the internet and try again')
-
-    return soup
+logger: logging.Logger = logging.getLogger('log')
+logger.addHandler(logging.StreamHandler())
+logger.setLevel(logging.DEBUG)
 
 
-def get_date_ids_soup(soup):
-    try:
-        date_ids = soup.find('ul', {'class': 'fi-ranking-schedule__nav'}).find_all('li')
-    except AttributeError:
-        return ['AttributeError']
-
-    return date_ids
+FIRST_DATE = 'id1'  # first date 31 12 1992
+FIFA_URL = 'https://www.fifa.com/fifa-world-ranking/ranking-table/men/rank'
 
 
-def get_date_ids_df(soup):
-    df = pd.DataFrame(columns=['date', 'date_id'])
-
-    for date_data in soup:
-        date = pd.to_datetime(
-            date_data.text.strip(),
-            format='%d %B %Y'
-        )
-
-        df = df.append({
-            'date': date,
-            'date_id': date_data['data-value']
-        }, ignore_index=True)
-
-    return df
+def get_dates_html():
+    page_source = r.get(f'{FIFA_URL}/{FIRST_DATE}/')
+    page_source.raise_for_status()
+    dates = BeautifulSoup(page_source.text,
+                          'html.parser',
+                          parse_only=SoupStrainer('li', attrs={'class': 'fi-ranking-schedule__nav__item'}))
+    return dates
 
 
-def get_teams_data(soup):
-    try:
-        html_data = soup.find('tbody').find_all('tr')
-    except AttributeError:
-        return ['AttributeError']
+def create_dates_dataset(html_dates):
+    date_ids = [li['data-value'] for li in html_dates]
+    dates = [li.text.strip() for li in html_dates]
+    dataset = pd.DataFrame(data={'date': dates, 'date_id': date_ids})
 
-    return html_data
+    # convert 'date' from str to datetime and sorting "old -> new"
+    dataset['date'] = pd.to_datetime(dataset['date'], format='%d %B %Y')
+    dataset.sort_values('date', ignore_index=True, inplace=True)
+    assert dataset.date.min() == dataset.iloc[0].date, \
+        "Incorrect dataset sorting"
+
+    return dataset
 
 
-def parse_team_data(soup):
+async def get_rank_page(date_id, session):
+    async with session.get(f'{FIFA_URL}/{date_id}/') as response:
+        page = await response.text()
+        if response.status == 200:
+            return {'page': page, 'id': date_id}
+        else:
+            logger.error(f'Parse error, page: {response.url}')
+            return False
 
-    try:
-        return {
-            'id': int(soup['data-team-id']),
-            'country_full': soup.find('span', {'class': 'fi-t__nText'}).text,
-            'country_abrv': soup.find('span', {'class': 'fi-t__nTri'}).text,
-            'rank': int(soup.find('td', {'class': 'fi-table__rank'}).text),
-            'total_points': int(soup.find('td', {'class': 'fi-table__points'}).text),
-            'previous_points': int(soup.find('td', {'class': 'fi-table__prevpoints'}).text.replace('', '0')),
-            'rank_change': int(soup.find('td', {'class': 'fi-table__rankingmovement'}).text.replace('-', '0')),
-            'confederation': soup.find('td', {'class': 'fi-table__confederation'}).text.strip('#'),
+
+def scrapy_rank_table(page, date):
+    rows = BeautifulSoup(page,
+                         'html.parser',
+                         parse_only=SoupStrainer('tbody')).find_all('tr')
+    table = []
+    for row in rows:
+        table.append({
+            'id': int(row['data-team-id']),
+            'country_full': row.find('span', {'class': 'fi-t__nText'}).text,
+            'country_abrv': row.find('span', {'class': 'fi-t__nTri'}).text,
+            'rank': int(row.find('td', {'class': 'fi-table__rank'}).text),
+            'total_points': int(row.find('td', {'class': 'fi-table__points'}).text),
+            'previous_points': int(row.find('td', {'class': 'fi-table__prevpoints'}).text or 0),
+            'rank_change': int(row.find('td', {'class': 'fi-table__rankingmovement'}).text.replace('-', '0')),
+            'confederation': row.find('td', {'class': 'fi-table__confederation'}).text.strip('#'),
             'rank_date': date
-        }
-    except AttributeError:
-        return {'id': 'AttributeError'}
+        })
+    return table
 
 
-def save_table(dataframe):
-    last_date = str(dataframe.rank_date.max())[:10]   # cut last date to format "XXXX-XX-XX"
-    file_name = f'fifa_ranking-{last_date}'
-    dataframe.to_csv(
-        f'{file_name}.csv',
-        index=False,
-        encoding='utf-8'
-    )
-    print(f'File {file_name} was saved to {os.getcwd()}\n')
-
-
-if __name__ == '__main__':
-    date_id = 'id1'  # first date 31 12 1992
-    fifa_url = 'https://www.fifa.com/fifa-world-ranking/ranking-table/men/rank'
-    attribute_error_msg = 'ERROR: The fifa.com site has changed the code. Create issue in the project repository.'
-    page_soup = get_page_soup(date_id, fifa_url)
-    date_ids_soup = get_date_ids_soup(page_soup)
-
-    assert date_ids_soup[0] != 'AttributeError', attribute_error_msg
-
-    date_ids_df = get_date_ids_df(date_ids_soup)
-    print(f'First date: {date_ids_df.date.min()}\n'
-          f'Last date: {date_ids_df.date.max()}')
-
+async def parse_ranks(pages_df):
     fifa_ranking = pd.DataFrame(columns=[
         'id', 'rank', 'country_full', 'country_abrv',
         'total_points', 'previous_points', 'rank_change',
         'confederation', 'rank_date'
     ])
+
     start_time = datetime.datetime.now()
-    print("Start parsing.. ", datetime.datetime.now() - start_time)
+    logger.info(f"Start parsing..")
 
-    for i, (date, date_id) in enumerate(date_ids_df.values, start=1):
-        page_soup = get_page_soup(date_id, fifa_url)
-        teams_data = get_teams_data(page_soup)
-        assert teams_data[0] != 'AttributeError', attribute_error_msg
+    task_parse = []
+    async with aiohttp.ClientSession() as session:
+        for date_id in pages_df.date_id.to_list():
+            task_parse += [asyncio.create_task(get_rank_page(date_id, session))]
 
-        for team_data_html in teams_data:
-            team_data = parse_team_data(team_data_html)
-            assert team_data['id'] != 'AttributeError', attribute_error_msg
+        for task in asyncio.as_completed(task_parse):
+            page = await task
+            if not task:
+                continue
+            date_ranking = scrapy_rank_table(page['page'],
+                                             pages_df[pages_df.date_id == page['id']].date.iloc[0])
+            fifa_ranking = fifa_ranking.append(date_ranking, ignore_index=True)
 
-            fifa_ranking = fifa_ranking.append(team_data, ignore_index=True)
+            if fifa_ranking.rank_date.nunique() % 50 == 0:
+                logger.debug(f'Complite {fifa_ranking.rank_date.nunique()}/{pages_df.shape[0]} dates')
 
-        if i % 25 == 0:
-            print(f'Complite {i}/{date_ids_df.shape[0]} dates')
+    fifa_ranking.sort_values('rank_date', ignore_index=True, inplace=True)
+    logger.info(f'Parsing complite. Time {datetime.datetime.now()-start_time}')
+    return fifa_ranking
 
-    else:
-        print(f'Parsing complite. Time {datetime.datetime.now()-start_time}')
-        save_table(fifa_ranking)
 
-    print(fifa_ranking.head())
+def data_correction(df):
+    """ Handmade """
+    # Lebanon has two abbreviations
+    df.replace({'country_abrv': 'LIB'}, 'LBN', inplace=True)
+    # Montenegro duplicates
+    df.drop(df[df.id == 1903356].index, inplace=True)
+    # North Macedonia has two full names
+    df.replace({'country_full': 'FYR Macedonia'}, 'North Macedonia', inplace=True)
+    # Cabo Verde has two full names
+    df.replace({'country_full': 'Cape Verde Islands'}, 'Cabo Verde', inplace=True)
+    # Saint Vincent and the Grenadines have two full names
+    df.replace({'country_full': 'St. Vincent and the Grenadines'}, 'St. Vincent / Grenadines', inplace=True)
+    # Swaziland has two full names
+    df.replace({'country_full': 'Eswatini'}, 'Swaziland', inplace=True)
+    # Curacao transform to Curaçao (with 'ç')
+    df.replace({'country_full': 'Curacao'}, 'Curaçao', inplace=True)
+    # São Tomé and Príncipe have three full names
+    df.replace({'country_full': ['Sao Tome e Principe', 'São Tomé e Príncipe']},
+               'São Tomé and Príncipe', inplace=True)
+    return df
+
+
+def check_data(ranks_df, dates_df):
+    if ranks_df.rank_date.nunique() != dates_df.date.nunique():
+        logger.warning("Warning! Numbers of rank dates don't match")
+    if ranks_df.country_full.nunique() != ranks_df.country_abrv.nunique():
+        logger.warning("Warning! Number of names and abbreviations does not match")
+    if ranks_df.country_full.nunique() != ranks_df.id.nunique():
+        logger.warning("Warning! Number of names and IDs does not match")
+
+
+def save_as_csv(df):
+    file_name = f'fifa_ranking-{df.rank_date.max().date()}.csv'
+    df.to_csv(file_name, index=False, encoding='utf-8')
+
+    print(f'Dataset {file_name} was saved to {os.getcwd()}\n')
+
+
+async def main():
+    dates_from_page = get_dates_html()
+    dates_dataset = create_dates_dataset(dates_from_page)
+
+    assert len(dates_from_page) == dates_dataset.shape[0], \
+        "Number of dates in html and dataset don't match"
+
+    logger.info(f'Last date: {dates_dataset.date.max().date()}')
+
+    fifa_ranking_df = await parse_ranks(dates_dataset)
+    fifa_ranking_df = data_correction(fifa_ranking_df)
+    check_data(fifa_ranking_df, dates_dataset)
+    save_as_csv(fifa_ranking_df)
+
+    print(fifa_ranking_df.head())
+
+
+if __name__ == '__main__':
+    asyncio.run(main())
