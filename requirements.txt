@@ -1,6 +1,6 @@
 aiohttp==3.7.3
 beautifulsoup4==4.7.1
 nest-asyncio==1.4.0
-numpy==1.19.2
+numpy==1.22.0
 pandas==1.2.0
 requests==2.22.0
